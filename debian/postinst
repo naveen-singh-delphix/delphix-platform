@@ -92,7 +92,7 @@ configure)
       echo "ERROR: Could not update the /etc/udev/rules.d/80-net-setup-link.rules file"
       exit 1
     fi
-    update-initramfs -u -t -k $(uname -r)
+    update-initramfs -u -t -k "$(uname -r)"
   fi
 
 	;;
