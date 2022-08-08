@@ -1,0 +1,61 @@
+#!/bin/bash
+#
+# Copyright (c) 2022 by Delphix. All rights reserved.
+#
+
+# 1. This script is applicable only for Upgrade scenarios in AWS deployments
+# 2. The fix for DLPX-75209 shifts to use mac addresses instead of canonical network
+# interface names. To handle this change for upgrades, we save a map from interface
+# names to their mac addresses. Post reboot, this script will be called as part of
+# the PreExecStart directive in systemd-networkd service.
+# 3. The script takes the map and matches the keys with the existing interface names
+# in the netplan file, and for each such match, replaces the interface name with the
+# corresponding mac address stored in the map file
+
+INTERFACE_TO_MACADDRESS_MAP_FILE="/etc/interface_to_macaddress_map.out"
+DLPX_NETPLAN_FILE="/etc/netplan/10-delphix.yaml"
+
+function die()
+{
+  echo "$(basename $0): $@" >&2
+  exit 1
+}
+
+# Once netplan file has been updated with mac address based names, we remove the map file from
+# the engine to prevent future conversion attempts. Hence we check for its existence first.
+if [[ -e "$INTERFACE_TO_MACADDRESS_MAP_FILE" ]]; then
+  # dump the existing netplan file before updating it, could be handy for debugging
+  cat "$DLPX_NETPLAN_FILE" >>/var/log/syslog 2>&1
+  if ! grep -E 'enx[0-9a-z]{12}' "$DLPX_NETPLAN_FILE"; then
+    echo "Did not found MAC address based network interfaces names in the $DLPX_NETPLAN_FILE file" \
+      >>/var/log/syslog 2>&1
+    # We have booted into a new image post engine upgrade, update the netplan file with MAC based
+    # interface names
+    while IFS= read -r line; do
+      ifname=$(echo $line | awk '{print $1}')
+      macname=$(echo $line | awk '{print $2}')
+      macname1="enx""$macname"
+      echo "Modifying $ifname to $macname1 in the netplan file" >>/var/log/syslog 2>&1
+      grep -n "$ifname" /etc/netplan/10-delphix.yaml || die "Did not find $ifname in netplan file"
+      sed -i "s/$ifname/$macname1/g" /etc/netplan/10-delphix.yaml || \
+        die "Could not modify $ifname or $macname in the netplan file"
+    done < "$INTERFACE_TO_MACADDRESS_MAP_FILE"
+
+    echo "Updated all entries from interface names to mac addresses" >>/var/log/syslog 2>&1
+
+    # The netplan file has been modified. We must call "netplan generate" to generate new link
+    # files under /run/systemd/network that will be consumed by systemd-networkd to bring up the
+    # network interfaces
+    netplan generate || die "Failed to run netplan generate command"
+  else
+    # we have booted into an instance cloned from a parent instance that already had MAC based
+    # interface names in its netplan file. The cloned instance will always have a different set of
+    # MAC addresses from its parent instance, which requires us to update the netplan file on this
+    # instance with its own/unique MAC based interface names. We delegate this update to the osadmin
+    # service which is our dedicated service for managing configurations of the netplan file
+    echo "We are booting into a cloned instance, do nothing" >>/var/log/syslog 2>&1
+  fi
+  # prevent conversion attempts on subsequent reboots
+  rm "$INTERFACE_TO_MACADDRESS_MAP_FILE" || \
+    die "Failed to remove the $INTERFACE_TO_MACADDRESS_MAP_FILE file"
+fi
