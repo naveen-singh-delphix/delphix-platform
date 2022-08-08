@@ -15,6 +15,9 @@
 # limitations under the License.
 #
 
+DEFAULT_UDEV_NET_SETUP_LINK_FILE="/usr/lib/udev/rules.d/80-net-setup-link.rules"
+MODIFIED_UDEV_NET_SETUP_LINK_FILE="/etc/lib/udev/rules.d/80-net-setup-link.rules"
+
 case $1 in
 configure)
 	systemctl disable apt-daily.service
@@ -73,25 +76,23 @@ configure)
 		exit 1
 	fi
 
-  # We are switching to MAC address based network interface names ini AWS environment
-  # from 6.0.10.0 onwards. To handle this change, we leverage the default
-  # 80-net-setup-link.rules udev rules file. We make a copy of this file under /etc
-  # and then change the naming policy to MAC address based names. Please see DLPX-75209
-  # for more context on this change.
-  platform_type=$(cat /var/lib/delphix-appliance/platform)
-  if [[ "$platform_type" == "aws" ]]; then
-    cp /usr/lib/udev/rules.d/80-net-setup-link.rules /etc/udev/rules.d
-    rc=$?
-    if [[ "$rc" -ne 0 ]]; then
-      echo "ERROR: Could not copy the /usr/lib/udev/rules.d/80-net-setup-link.rules to /etc"
-      exit 1
-    fi
-    sed -i 's/ID_NET_NAME/ID_NET_NAME_MAC/g' /etc/udev/rules.d/80-net-setup-link.rules
-    rc=$?
-    if [[ "$rc" -ne 0 ]]; then
-      echo "ERROR: Could not update the /etc/udev/rules.d/80-net-setup-link.rules file"
-      exit 1
-    fi
+  # We are switching to MAC address based network interface names only in AWS environment
+  # from 6.0.10.0 onwards. To handle this change, we leverage the default 80-net-setup-link.rules udev
+  # rules file. We make a copy of this file under /etc and then change the naming policy to MAC address
+  # based names. Please see DLPX-75209 for more context on this change.
+  # Though unlikely, it is still remotely possible that the /usr/lib/udev/rules.d/80-net-setup-link.rules
+  # file either gets removed from the base OS distribution or gets replaced with another file to serve
+  # the exact/similar purpose. We must detect and inspect such a change and update the renaming logic if
+  # needed. Ideally, we should also detect changes in the contents of this file but we doubt there is an
+  # obvious way of accomplishing this today.
+  if [[ ! -e "$DEFAULT_UDEV_NET_SETUP_LINK_FILE" ]]; then
+    echo "$DEFAULT_UDEV_NET_SETUP_LINK_FILE found missing, investigation needed to understand \
+      "if its location has changed or the file itself has been replaced with another udev rules file" >&2
+    exit 1
+  fi
+  if [[ "$(get-appliance-platform)" == "aws" ]]; then
+    cp "$DEFAULT_UDEV_NET_SETUP_LINK_FILE" /etc/udev/rules.d
+    grep -E sed -i 's/ID_NET_NAME/ID_NET_NAME_MAC/g' "$MODIFIED_UDEV_NET_SETUP_LINK_FILE"
     update-initramfs -u -t -k "$(uname -r)"
   fi
 
